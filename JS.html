@@ -1,0 +1,880 @@
+<script>
+  /* =====================================================================
+   * TASKFLOW — Frontend Logic (JS.html)
+   * ===================================================================== */
+
+  const TOKEN_KEY = 'tf_session_token';
+
+  /* ------------------------- STATE ------------------------- */
+  const state = {
+    user: null,
+    token: null,
+    tasks: [],
+    filters: { search: '', status: '', priority: '' },
+    editingTaskId: null,
+    deletingTaskId: null,
+    notifications: [],
+    readNotifIds: new Set()
+  };
+
+  /* ------------------------- INIT ------------------------- */
+  document.addEventListener('DOMContentLoaded', init);
+
+  function init() {
+    bindStaticEvents();
+    bindAuthEvents();
+    restoreSidebarState();
+
+    const savedToken = localStorage.getItem(TOKEN_KEY);
+    if (savedToken) {
+      state.token = savedToken;
+      google.script.run
+        .withSuccessHandler(onSessionChecked)
+        .withFailureHandler(() => showAuthScreen())
+        .validateSession(savedToken);
+    } else {
+      showAuthScreen();
+    }
+  }
+
+  function onSessionChecked(res) {
+    if (res.success) {
+      state.user = res.user;
+      hideLoadingOverlay();
+      renderUserChrome();
+      showApp();
+      loadDashboard();
+      loadTasks();
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+      showAuthScreen();
+    }
+  }
+
+  function hideLoadingOverlay() {
+    document.getElementById('loadingOverlay').style.display = 'none';
+  }
+
+  function showApp() {
+    document.getElementById('authScreen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+  }
+
+  function showAuthScreen() {
+    hideLoadingOverlay();
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('authScreen').style.display = 'flex';
+  }
+
+  function renderUserChrome() {
+    const initials = getInitials(state.user.name);
+    document.getElementById('greetingName').textContent = state.user.name;
+    document.getElementById('topbarUserName').textContent = state.user.name;
+    setAvatarEl(document.getElementById('userAvatar'), initials, state.user.avatar);
+    setAvatarEl(document.getElementById('profileAvatar'), initials, state.user.avatar);
+    document.getElementById('profileName').textContent = state.user.name;
+    document.getElementById('profileEmail').textContent = state.user.email;
+  }
+
+  function setAvatarEl(el, initials, avatarDataUrl) {
+    if (avatarDataUrl) {
+      el.textContent = '';
+      el.classList.add('avatar-img');
+      el.style.backgroundImage = `url("${avatarDataUrl}")`;
+    } else {
+      el.classList.remove('avatar-img');
+      el.style.backgroundImage = '';
+      el.textContent = initials;
+    }
+  }
+
+  function getInitials(name) {
+    if (!name) return 'U';
+    const parts = name.trim().split(/\s+/);
+    return parts.length > 1
+      ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+      : parts[0].substring(0, 2).toUpperCase();
+  }
+
+  /* ------------------------- AUTH: SIGNUP / LOGIN ------------------------- */
+  function bindAuthEvents() {
+    document.getElementById('showSignupLink').addEventListener('click', e => {
+      e.preventDefault();
+      toggleAuthForm('signup');
+    });
+    document.getElementById('showLoginLink').addEventListener('click', e => {
+      e.preventDefault();
+      toggleAuthForm('login');
+    });
+
+    document.querySelectorAll('.password-toggle').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = document.getElementById(btn.dataset.target);
+        const icon = btn.querySelector('.material-symbols-rounded');
+        if (target.type === 'password') {
+          target.type = 'text';
+          icon.textContent = 'visibility_off';
+        } else {
+          target.type = 'password';
+          icon.textContent = 'visibility';
+        }
+      });
+    });
+
+    document.getElementById('loginForm').addEventListener('submit', handleLoginSubmit);
+    document.getElementById('signupForm').addEventListener('submit', handleSignupSubmit);
+  }
+
+  function toggleAuthForm(which) {
+    document.getElementById('loginError').textContent = '';
+    document.getElementById('signupError').textContent = '';
+    document.getElementById('loginForm').style.display = which === 'login' ? 'block' : 'none';
+    document.getElementById('signupForm').style.display = which === 'signup' ? 'block' : 'none';
+  }
+
+  function handleLoginSubmit(e) {
+    e.preventDefault();
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const errorEl = document.getElementById('loginError');
+    errorEl.textContent = '';
+
+    setButtonLoading('loginSubmitBtn', true);
+    google.script.run
+      .withSuccessHandler(res => {
+        setButtonLoading('loginSubmitBtn', false);
+        if (!res.success) { errorEl.textContent = res.error; return; }
+        onAuthSuccess(res);
+      })
+      .withFailureHandler(err => {
+        setButtonLoading('loginSubmitBtn', false);
+        errorEl.textContent = 'Something went wrong: ' + err.message;
+      })
+      .logIn(email, password);
+  }
+
+  function handleSignupSubmit(e) {
+    e.preventDefault();
+    const name = document.getElementById('signupName').value.trim();
+    const email = document.getElementById('signupEmail').value.trim();
+    const password = document.getElementById('signupPassword').value;
+    const errorEl = document.getElementById('signupError');
+    errorEl.textContent = '';
+
+    setButtonLoading('signupSubmitBtn', true);
+    google.script.run
+      .withSuccessHandler(res => {
+        setButtonLoading('signupSubmitBtn', false);
+        if (!res.success) { errorEl.textContent = res.error; return; }
+        document.getElementById('signupForm').reset();
+        toggleAuthForm('login');
+        document.getElementById('loginEmail').value = email;
+        document.getElementById('loginPassword').focus();
+        showToast('Account created! Please log in to continue.', 'success');
+      })
+      .withFailureHandler(err => {
+        setButtonLoading('signupSubmitBtn', false);
+        errorEl.textContent = 'Something went wrong: ' + err.message;
+      })
+      .signUp(name, email, password);
+  }
+
+  function onAuthSuccess(res) {
+    state.token = res.token;
+    state.user = res.user;
+    localStorage.setItem(TOKEN_KEY, res.token);
+    renderUserChrome();
+    showApp();
+    loadDashboard();
+    loadTasks();
+    switchView('dashboard');
+  }
+
+  function handleLogoutClick(e) {
+    e.preventDefault();
+    closeUserMenu();
+    const token = state.token;
+    localStorage.removeItem(TOKEN_KEY);
+    state.token = null;
+    state.user = null;
+    state.tasks = [];
+    document.getElementById('loginForm').reset();
+    document.getElementById('signupForm').reset();
+    toggleAuthForm('login');
+    showAuthScreen();
+    if (token) {
+      google.script.run.withFailureHandler(() => {}).logOut(token);
+    }
+  }
+
+  /* ------------------------- STATIC EVENT BINDINGS ------------------------- */
+  function bindStaticEvents() {
+    // Sidebar toggle
+    document.getElementById('hamburgerBtn').addEventListener('click', toggleSidebar);
+
+    // Navigation
+    document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+      item.addEventListener('click', e => {
+        e.preventDefault();
+        switchView(item.dataset.view);
+      });
+    });
+    document.querySelectorAll('.dropdown-item[data-view]').forEach(item => {
+      item.addEventListener('click', e => {
+        e.preventDefault();
+        switchView(item.dataset.view);
+        closeUserMenu();
+      });
+    });
+
+    // User menu
+    document.getElementById('userMenuTrigger').addEventListener('click', toggleUserMenu);
+    document.addEventListener('click', e => {
+      const menu = document.getElementById('userMenu');
+      if (!menu.contains(e.target)) closeUserMenu();
+      const notif = document.getElementById('notifMenu');
+      if (!notif.contains(e.target)) closeNotifMenu();
+    });
+
+    // Notifications
+    document.getElementById('notifTrigger').addEventListener('click', toggleNotifMenu);
+    document.getElementById('notifClearBtn').addEventListener('click', markAllNotifsRead);
+
+    // Logout
+    document.getElementById('logoutBtn').addEventListener('click', handleLogoutClick);
+    document.getElementById('sidebarLogoutBtn').addEventListener('click', handleLogoutClick);
+
+    // Add task buttons
+    document.getElementById('openAddTaskBtn').addEventListener('click', () => openTaskModal());
+    document.getElementById('dashAddTaskBtn').addEventListener('click', () => openTaskModal());
+
+    // Modal controls
+    document.getElementById('closeModalBtn').addEventListener('click', closeTaskModal);
+    document.getElementById('cancelModalBtn').addEventListener('click', closeTaskModal);
+    document.getElementById('taskModalOverlay').addEventListener('click', e => {
+      if (e.target.id === 'taskModalOverlay') closeTaskModal();
+    });
+    document.getElementById('saveTaskBtn').addEventListener('click', handleSaveTask);
+
+    // Confirm delete modal
+    document.getElementById('closeConfirmBtn').addEventListener('click', closeConfirmModal);
+    document.getElementById('cancelDeleteBtn').addEventListener('click', closeConfirmModal);
+    document.getElementById('confirmModalOverlay').addEventListener('click', e => {
+      if (e.target.id === 'confirmModalOverlay') closeConfirmModal();
+    });
+    document.getElementById('confirmDeleteBtn').addEventListener('click', handleConfirmDelete);
+
+    // Search & filters
+    document.getElementById('searchInput').addEventListener('input', debounce(e => {
+      state.filters.search = e.target.value.toLowerCase();
+      renderTaskList();
+    }, 200));
+    document.getElementById('filterStatus').addEventListener('change', e => {
+      state.filters.status = e.target.value;
+      renderTaskList();
+    });
+    document.getElementById('filterPriority').addEventListener('change', e => {
+      state.filters.priority = e.target.value;
+      renderTaskList();
+    });
+
+    // Profile: avatar upload + name edit
+    document.getElementById('avatarEditBtn').addEventListener('click', () => {
+      document.getElementById('avatarFileInput').click();
+    });
+    document.getElementById('avatarFileInput').addEventListener('change', handleAvatarSelected);
+    document.getElementById('editNameBtn').addEventListener('click', openNameEdit);
+    document.getElementById('cancelNameBtn').addEventListener('click', closeNameEdit);
+    document.getElementById('saveNameBtn').addEventListener('click', handleSaveName);
+
+    // Date input auto-formatting (DD/MM/YYYY)
+    document.getElementById('taskDueDate').addEventListener('input', handleDateInput);
+    document.getElementById('taskDueDate').addEventListener('keydown', handleDateKeydown);
+  }
+
+  /* ------------------------- SIDEBAR ------------------------- */
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    if (window.innerWidth <= 860) {
+      sidebar.classList.toggle('mobile-open');
+      return;
+    }
+    sidebar.classList.toggle('collapsed');
+    localStorage.setItem('tf_sidebar_collapsed', sidebar.classList.contains('collapsed'));
+  }
+
+  function restoreSidebarState() {
+    const collapsed = localStorage.getItem('tf_sidebar_collapsed') === 'true';
+    if (collapsed && window.innerWidth > 860) {
+      document.getElementById('sidebar').classList.add('collapsed');
+    }
+  }
+
+  /* ------------------------- VIEW SWITCHING ------------------------- */
+  function switchView(viewName) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active-view'));
+    document.getElementById('view-' + viewName).classList.add('active-view');
+
+    document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+      item.classList.toggle('active', item.dataset.view === viewName);
+    });
+
+    if (window.innerWidth <= 860) {
+      document.getElementById('sidebar').classList.remove('mobile-open');
+    }
+
+    if (viewName === 'reports') loadReports();
+    if (viewName === 'profile') loadProfileStats();
+  }
+
+  function toggleUserMenu() {
+    closeNotifMenu();
+    document.getElementById('userMenu').classList.toggle('open');
+  }
+  function closeUserMenu() {
+    document.getElementById('userMenu').classList.remove('open');
+  }
+
+  /* ------------------------- NOTIFICATIONS ------------------------- */
+  function toggleNotifMenu() {
+    closeUserMenu();
+    document.getElementById('notifMenu').classList.toggle('open');
+  }
+  function closeNotifMenu() {
+    document.getElementById('notifMenu').classList.remove('open');
+  }
+
+  function computeNotifications() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const soonCutoff = new Date(today);
+    soonCutoff.setDate(today.getDate() + 2);
+
+    const notifs = [];
+    state.tasks.forEach(t => {
+      if (!t.dueDateRaw || t.status === 'Completed') return;
+      const due = new Date(t.dueDateRaw);
+      due.setHours(0, 0, 0, 0);
+
+      if (due < today) {
+        notifs.push({
+          id: 'overdue-' + t.id, type: 'overdue',
+          icon: 'warning',
+          message: `"${t.title}" is overdue`,
+          date: t.dueDate
+        });
+      } else if (due.getTime() === today.getTime()) {
+        notifs.push({
+          id: 'today-' + t.id, type: 'due-today',
+          icon: 'today',
+          message: `"${t.title}" is due today`,
+          date: t.dueDate
+        });
+      } else if (due <= soonCutoff) {
+        notifs.push({
+          id: 'soon-' + t.id, type: 'due-soon',
+          icon: 'event_upcoming',
+          message: `"${t.title}" is due soon`,
+          date: t.dueDate
+        });
+      }
+    });
+
+    // Overdue first, then due today, then due soon
+    const order = { overdue: 0, 'due-today': 1, 'due-soon': 2 };
+    notifs.sort((a, b) => order[a.type] - order[b.type]);
+    state.notifications = notifs;
+    renderNotifications();
+  }
+
+  function renderNotifications() {
+    const listEl = document.getElementById('notifList');
+    const badgeEl = document.getElementById('notifBadge');
+    const unread = state.notifications.filter(n => !state.readNotifIds.has(n.id));
+
+    if (unread.length > 0) {
+      badgeEl.style.display = 'flex';
+      badgeEl.textContent = unread.length > 9 ? '9+' : unread.length;
+    } else {
+      badgeEl.style.display = 'none';
+    }
+
+    if (state.notifications.length === 0) {
+      listEl.innerHTML = `
+        <div class="notif-empty">
+          <span class="material-symbols-rounded">notifications_off</span>
+          <p>You're all caught up!</p>
+        </div>`;
+      return;
+    }
+
+    listEl.innerHTML = state.notifications.map(n => `
+      <div class="notif-item ${state.readNotifIds.has(n.id) ? '' : 'unread'}">
+        <div class="notif-icon ${n.type}"><span class="material-symbols-rounded">${n.icon}</span></div>
+        <div class="notif-text">
+          <p>${escapeHtml(n.message)}</p>
+          <span>${escapeHtml(n.date || '')}</span>
+        </div>
+      </div>`).join('');
+  }
+
+  function markAllNotifsRead() {
+    state.notifications.forEach(n => state.readNotifIds.add(n.id));
+    renderNotifications();
+  }
+
+  /* ------------------------- DASHBOARD ------------------------- */
+  function loadDashboard() {
+    google.script.run
+      .withSuccessHandler(res => {
+        if (!res.success) { showToast(res.error, 'error'); return; }
+        renderStats(res.stats);
+      })
+      .withFailureHandler(err => showToast('Failed to load dashboard: ' + err.message, 'error'))
+      .getDashboard(state.token);
+  }
+
+  function renderStats(stats) {
+    document.getElementById('statTotal').textContent = stats.total;
+    document.getElementById('statPending').textContent = stats.pending;
+    document.getElementById('statCompleted').textContent = stats.completed;
+    document.getElementById('statOverdue').textContent = stats.overdue;
+  }
+
+  /* ------------------------- TASKS ------------------------- */
+  function loadTasks() {
+    google.script.run
+      .withSuccessHandler(res => {
+        if (!res.success) { showToast(res.error, 'error'); return; }
+        state.tasks = res.tasks;
+        renderTaskList();
+        renderDashboardTaskList();
+        computeNotifications();
+      })
+      .withFailureHandler(err => showToast('Failed to load tasks: ' + err.message, 'error'))
+      .getTasks(state.token);
+  }
+
+  function getFilteredTasks() {
+    return state.tasks.filter(t => {
+      const matchesSearch = !state.filters.search ||
+        t.title.toLowerCase().includes(state.filters.search) ||
+        (t.description || '').toLowerCase().includes(state.filters.search);
+      const matchesStatus = !state.filters.status || t.status === state.filters.status;
+      const matchesPriority = !state.filters.priority || t.priority === state.filters.priority;
+      return matchesSearch && matchesStatus && matchesPriority;
+    });
+  }
+
+  function isOverdue(task) {
+    if (!task.dueDateRaw || task.status === 'Completed') return false;
+    const due = new Date(task.dueDateRaw);
+    due.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return due < today;
+  }
+
+  function renderTaskList() {
+    const container = document.getElementById('taskListContainer');
+    const filtered = getFilteredTasks();
+    container.innerHTML = filtered.length ? buildTaskTable(filtered) : buildEmptyState();
+    bindTaskRowActions(container);
+  }
+
+  function renderDashboardTaskList() {
+    const container = document.getElementById('dashboardTaskList');
+    const recent = state.tasks.slice(0, 5);
+    container.innerHTML = recent.length ? buildTaskTable(recent) : buildEmptyState();
+    bindTaskRowActions(container);
+  }
+
+  function buildTaskTable(tasks) {
+    const rows = tasks.map(t => {
+      const overdue = isOverdue(t);
+      const dueClass = overdue ? 'due-overdue' : '';
+      const priorityBadge = 'badge-' + t.priority.toLowerCase();
+      const statusBadge = 'badge-' + t.status.toLowerCase().replace(/\s+/g, '');
+      return `
+        <tr data-task-id="${escapeHtml(t.id)}">
+          <td>
+            <div class="task-title-cell">${escapeHtml(t.title)}</div>
+            ${t.description ? `<div class="task-desc-cell">${escapeHtml(t.description)}</div>` : ''}
+          </td>
+          <td><span class="badge ${priorityBadge}">${escapeHtml(t.priority)}</span></td>
+          <td><span class="badge ${statusBadge}">${escapeHtml(t.status)}</span></td>
+          <td class="${dueClass}">${t.dueDate ? escapeHtml(t.dueDate) : '—'}</td>
+          <td>
+            <div class="action-btns">
+              ${t.status !== 'Completed' ? `
+              <button class="action-btn complete" title="Mark Complete" data-action="complete">
+                <span class="material-symbols-rounded">task_alt</span>
+              </button>` : ''}
+              <button class="action-btn edit" title="Edit" data-action="edit">
+                <span class="material-symbols-rounded">edit</span>
+              </button>
+              <button class="action-btn delete" title="Delete" data-action="delete">
+                <span class="material-symbols-rounded">delete</span>
+              </button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+
+    return `
+      <table class="task-table">
+        <thead>
+          <tr>
+            <th>Task</th><th>Priority</th><th>Status</th><th>Due Date</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function buildEmptyState() {
+    return `
+      <div class="empty-state">
+        <span class="material-symbols-rounded">inbox</span>
+        <h3>No tasks yet</h3>
+        <p>Click "Add Task" to create your first task.</p>
+      </div>`;
+  }
+
+  function bindTaskRowActions(container) {
+    container.querySelectorAll('tr[data-task-id]').forEach(row => {
+      const taskId = row.dataset.taskId;
+      const completeBtn = row.querySelector('[data-action="complete"]');
+      const editBtn = row.querySelector('[data-action="edit"]');
+      const deleteBtn = row.querySelector('[data-action="delete"]');
+
+      if (completeBtn) completeBtn.addEventListener('click', () => handleMarkComplete(taskId));
+      if (editBtn) editBtn.addEventListener('click', () => openTaskModal(taskId));
+      if (deleteBtn) deleteBtn.addEventListener('click', () => openConfirmModal(taskId));
+    });
+  }
+
+  /* ------------------------- ADD / EDIT TASK MODAL ------------------------- */
+  function openTaskModal(taskId) {
+    state.editingTaskId = taskId || null;
+    const form = document.getElementById('taskForm');
+    form.reset();
+    document.getElementById('titleError').textContent = '';
+
+    if (taskId) {
+      const task = state.tasks.find(t => t.id === taskId);
+      document.getElementById('modalTitle').textContent = 'Edit Task';
+      document.getElementById('taskId').value = task.id;
+      document.getElementById('taskTitle').value = task.title;
+      document.getElementById('taskDescription').value = task.description || '';
+      document.getElementById('taskPriority').value = task.priority;
+      document.getElementById('taskStatus').value = task.status;
+      // Convert ISO date to DD/MM/YYYY for the text input
+      if (task.dueDateRaw) {
+        try {
+          const d = new Date(task.dueDateRaw);
+          if (!isNaN(d.getTime())) {
+            const dd = String(d.getDate()).padStart(2, '0');
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const yyyy = d.getFullYear();
+            document.getElementById('taskDueDate').value = dd + '/' + mm + '/' + yyyy;
+          } else {
+            document.getElementById('taskDueDate').value = '';
+          }
+        } catch(e) {
+          document.getElementById('taskDueDate').value = '';
+        }
+      } else {
+        document.getElementById('taskDueDate').value = '';
+      }
+    } else {
+      document.getElementById('modalTitle').textContent = 'Add Task';
+      document.getElementById('taskId').value = '';
+      document.getElementById('taskDueDate').value = '';
+    }
+
+    document.getElementById('taskModalOverlay').classList.add('open');
+    document.body.classList.add('modal-open');
+  }
+
+  function closeTaskModal() {
+    document.getElementById('taskModalOverlay').classList.remove('open');
+    document.body.classList.remove('modal-open');
+    state.editingTaskId = null;
+  }
+
+  function handleSaveTask() {
+    const title = document.getElementById('taskTitle').value.trim();
+    const titleError = document.getElementById('titleError');
+
+    if (!title) {
+      titleError.textContent = 'Task title is required.';
+      return;
+    }
+    titleError.textContent = '';
+
+    const taskData = {
+      id: document.getElementById('taskId').value || null,
+      title: title,
+      description: document.getElementById('taskDescription').value.trim(),
+      priority: document.getElementById('taskPriority').value,
+      status: document.getElementById('taskStatus').value,
+      dueDate: document.getElementById('taskDueDate').value
+    };
+
+    setButtonLoading('saveTaskBtn', true);
+
+    const handler = res => {
+      setButtonLoading('saveTaskBtn', false);
+      if (!res.success) { showToast(res.error, 'error'); return; }
+      showToast(taskData.id ? 'Task updated' : 'Task saved', 'success');
+      closeTaskModal();
+      loadTasks();
+      loadDashboard();
+    };
+    const failHandler = err => {
+      setButtonLoading('saveTaskBtn', false);
+      showToast('Error: ' + err.message, 'error');
+    };
+
+    if (taskData.id) {
+      google.script.run.withSuccessHandler(handler).withFailureHandler(failHandler).updateTask(state.token, taskData);
+    } else {
+      google.script.run.withSuccessHandler(handler).withFailureHandler(failHandler).saveTask(state.token, taskData);
+    }
+  }
+
+  function handleMarkComplete(taskId) {
+    google.script.run
+      .withSuccessHandler(res => {
+        if (!res.success) { showToast(res.error, 'error'); return; }
+        showToast('Task marked complete', 'success');
+        loadTasks();
+        loadDashboard();
+      })
+      .withFailureHandler(err => showToast('Error: ' + err.message, 'error'))
+      .markTaskComplete(state.token, taskId);
+  }
+
+  /* ------------------------- DELETE CONFIRM MODAL ------------------------- */
+  function openConfirmModal(taskId) {
+    state.deletingTaskId = taskId;
+    document.getElementById('confirmModalOverlay').classList.add('open');
+    document.body.classList.add('modal-open');
+  }
+  function closeConfirmModal() {
+    document.getElementById('confirmModalOverlay').classList.remove('open');
+    document.body.classList.remove('modal-open');
+    state.deletingTaskId = null;
+  }
+  function handleConfirmDelete() {
+    if (!state.deletingTaskId) return;
+    setButtonLoading('confirmDeleteBtn', true);
+
+    google.script.run
+      .withSuccessHandler(res => {
+        setButtonLoading('confirmDeleteBtn', false);
+        if (!res.success) { showToast(res.error, 'error'); return; }
+        showToast('Task deleted', 'success');
+        closeConfirmModal();
+        loadTasks();
+        loadDashboard();
+      })
+      .withFailureHandler(err => {
+        setButtonLoading('confirmDeleteBtn', false);
+        showToast('Error: ' + err.message, 'error');
+      })
+      .deleteTask(state.token, state.deletingTaskId);
+  }
+
+  /* ------------------------- REPORTS ------------------------- */
+  function loadReports() {
+    google.script.run
+      .withSuccessHandler(res => {
+        if (!res.success) { showToast(res.error, 'error'); return; }
+        renderReports(res.reports);
+      })
+      .withFailureHandler(err => showToast('Failed to load reports: ' + err.message, 'error'))
+      .getReports(state.token);
+  }
+
+  function renderReports(r) {
+    document.getElementById('reportProgressFill').style.width = r.completionPercentage + '%';
+    document.getElementById('reportProgressLabel').textContent = r.completionPercentage + '%';
+    document.getElementById('weeklyCreated').textContent = r.weekly.created;
+    document.getElementById('weeklyCompleted').textContent = r.weekly.completed;
+    document.getElementById('monthlyCreated').textContent = r.monthly.created;
+    document.getElementById('monthlyCompleted').textContent = r.monthly.completed;
+  }
+
+  /* ------------------------- PROFILE ------------------------- */
+  function loadProfileStats() {
+    google.script.run
+      .withSuccessHandler(res => {
+        if (!res.success) return;
+        const p = res.profile;
+        document.getElementById('profileUserId').textContent = p.id;
+        document.getElementById('profileJoinDate').textContent = p.joinDate;
+        document.getElementById('profileLastLogin').textContent = p.lastLogin;
+        document.getElementById('profileTotalTasks').textContent = p.totalTasks;
+        document.getElementById('profileCompletedTasks').textContent = p.completedTasks;
+        document.getElementById('profileName').textContent = p.name;
+        document.getElementById('profileEmail').textContent = p.email;
+        state.user.name = p.name;
+        state.user.avatar = p.avatar;
+        renderUserChrome();
+      })
+      .withFailureHandler(() => { })
+      .getFullProfile(state.token);
+  }
+
+  function openNameEdit() {
+    document.getElementById('nameEditInput').value = state.user.name;
+    document.getElementById('nameEditRow').style.display = 'flex';
+  }
+  function closeNameEdit() {
+    document.getElementById('nameEditRow').style.display = 'none';
+  }
+  function handleSaveName() {
+    const name = document.getElementById('nameEditInput').value.trim();
+    if (!name) { showToast('Name cannot be empty.', 'error'); return; }
+
+    setButtonLoading('saveNameBtn', true);
+    google.script.run
+      .withSuccessHandler(res => {
+        setButtonLoading('saveNameBtn', false);
+        if (!res.success) { showToast(res.error, 'error'); return; }
+        state.user.name = res.name;
+        renderUserChrome();
+        closeNameEdit();
+        showToast('Name updated', 'success');
+      })
+      .withFailureHandler(err => {
+        setButtonLoading('saveNameBtn', false);
+        showToast('Error: ' + err.message, 'error');
+      })
+      .updateProfileName(state.token, name);
+  }
+
+  function handleAvatarSelected(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('Please choose an image file.', 'error');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const img = new Image();
+      img.onload = () => {
+        const dataUrl = resizeImageToDataUrl(img, 200, 200);
+        uploadAvatar(dataUrl);
+      };
+      img.src = evt.target.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  }
+
+  function resizeImageToDataUrl(img, maxW, maxH) {
+    const canvas = document.createElement('canvas');
+    let w = img.width, h = img.height;
+    const scale = Math.min(maxW / w, maxH / h, 1);
+    w = Math.round(w * scale);
+    h = Math.round(h * scale);
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', 0.82);
+  }
+
+  function uploadAvatar(dataUrl) {
+    showToast('Uploading photo…', 'success');
+    google.script.run
+      .withSuccessHandler(res => {
+        if (!res.success) { showToast(res.error, 'error'); return; }
+        state.user.avatar = dataUrl;
+        renderUserChrome();
+        showToast('Profile photo updated', 'success');
+      })
+      .withFailureHandler(err => showToast('Error: ' + err.message, 'error'))
+      .updateAvatar(state.token, dataUrl);
+  }
+
+  /* ------------------------- TOASTS ------------------------- */
+  function showToast(message, type) {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + (type || 'success');
+    const icon = type === 'error' ? 'error' : 'check_circle';
+    toast.innerHTML = `<span class="material-symbols-rounded">${icon}</span><span>${escapeHtml(message)}</span>`;
+    container.appendChild(toast);
+
+    setTimeout(() => {
+      toast.classList.add('fade-out');
+      setTimeout(() => toast.remove(), 300);
+    }, 3200);
+  }
+
+  /* ------------------------- UTILITIES ------------------------- */
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function debounce(fn, delay) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), delay);
+    };
+  }
+
+  function setButtonLoading(btnId, isLoading) {
+    const btn = document.getElementById(btnId);
+    btn.disabled = isLoading;
+    btn.style.opacity = isLoading ? '0.6' : '1';
+    btn.style.pointerEvents = isLoading ? 'none' : 'auto';
+  }
+
+  /* ----------- Date auto-formatting (DD/MM/YYYY) ----------- */
+  function handleDateInput(e) {
+    const el = e.target;
+    let val = el.value.replace(/[^0-9\/]/g, '');
+
+    // Auto-insert slashes
+    const digits = val.replace(/\//g, '');
+    if (digits.length >= 4) {
+      val = digits.substring(0, 2) + '/' + digits.substring(2, 4) + '/' + digits.substring(4, 8);
+    } else if (digits.length >= 2) {
+      val = digits.substring(0, 2) + '/' + digits.substring(2);
+    } else {
+      val = digits;
+    }
+
+    el.value = val;
+  }
+
+  function handleDateKeydown(e) {
+    const el = e.target;
+    // Allow backspace, delete, arrows, tab
+    if (['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.key)) return;
+    // Block non-numeric keys except /
+    if (!/[0-9\/]/.test(e.key)) {
+      e.preventDefault();
+      return;
+    }
+    // Block if already at max length
+    if (el.value.length >= 10 && !e.ctrlKey) {
+      e.preventDefault();
+    }
+  }
+
+</script>
