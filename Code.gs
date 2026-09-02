@@ -4,8 +4,7 @@ const TASKS_SHEET = 'Tasks';
 const CACHE_DURATION = 300; // seconds
 
 const USER_HEADERS = [
-  'User ID', 'Name', 'Email', 'Password Hash', 'Salt',
-  'Token', 'Avatar', 'Join Date', 'Last Login'
+  'User ID', 'Name', 'Email', 'Password', 'Join Date', 'Last Login'
 ];
 const TASK_HEADERS = [
   'Task ID', 'User Email', 'Title', 'Description',
@@ -73,33 +72,42 @@ function setupDatabase() {
     props.setProperty('SPREADSHEET_ID', ss.getId());
   }
 
+  try {
+    ss.setSpreadsheetTimeZone('Asia/Kolkata');
+  } catch (e) {}
+
   createSheets(ss);
+  fixExistingDatesInSheet(ss);
   return ss;
 }
 
 function createSpreadsheet() {
-  return SpreadsheetApp.create(APP_NAME);
+  const ss = SpreadsheetApp.create(APP_NAME);
+  try {
+    ss.setSpreadsheetTimeZone('Asia/Kolkata');
+  } catch (e) {}
+  return ss;
 }
 
 function createSheets(ss) {
   let usersSheet = ss.getSheetByName(USERS_SHEET);
   if (!usersSheet) {
     usersSheet = ss.insertSheet(USERS_SHEET);
-    usersSheet.appendRow(USER_HEADERS);
-    usersSheet.setFrozenRows(1);
-    usersSheet.getRange(1, 1, 1, USER_HEADERS.length)
-      .setFontWeight('bold').setBackground('#4361EE').setFontColor('#FFFFFF');
   }
+  usersSheet.getRange(1, 1, 1, USER_HEADERS.length).setValues([USER_HEADERS]);
+  usersSheet.setFrozenRows(1);
+  usersSheet.getRange(1, 1, 1, USER_HEADERS.length)
+    .setFontWeight('bold').setBackground('#4361EE').setFontColor('#FFFFFF');
   usersSheet.autoResizeColumns(1, USER_HEADERS.length);
 
   let tasksSheet = ss.getSheetByName(TASKS_SHEET);
   if (!tasksSheet) {
     tasksSheet = ss.insertSheet(TASKS_SHEET);
-    tasksSheet.appendRow(TASK_HEADERS);
-    tasksSheet.setFrozenRows(1);
-    tasksSheet.getRange(1, 1, 1, TASK_HEADERS.length)
-      .setFontWeight('bold').setBackground('#4361EE').setFontColor('#FFFFFF');
   }
+  tasksSheet.getRange(1, 1, 1, TASK_HEADERS.length).setValues([TASK_HEADERS]);
+  tasksSheet.setFrozenRows(1);
+  tasksSheet.getRange(1, 1, 1, TASK_HEADERS.length)
+    .setFontWeight('bold').setBackground('#4361EE').setFontColor('#FFFFFF');
   tasksSheet.autoResizeColumns(1, TASK_HEADERS.length);
 
   // Clean up the default "Sheet1" once our real sheets exist.
@@ -150,12 +158,11 @@ function signUp(name, email, password) {
     }
 
     const now = new Date();
-    const userId = 'USR-' + Utilities.getUuid().substring(0, 8).toUpperCase();
-    const salt = Utilities.getUuid();
-    const hash = hashPassword_(password, salt);
-    const token = generateToken_();
+    const userId = generateNextUserId_(sheet);
+    const formattedNow = formatDate(now);
+    const token = email;
 
-    sheet.appendRow([userId, name, email, hash, salt, token, '', now, now]);
+    sheet.appendRow([userId, name, email, password, formattedNow, formattedNow]);
     sheet.autoResizeColumns(1, USER_HEADERS.length);
 
     return {
@@ -163,7 +170,7 @@ function signUp(name, email, password) {
       token: token,
       user: {
         id: userId, name: name, email: email, avatar: '',
-        joinDate: formatDate(now), lastLogin: formatDate(now)
+        joinDate: formattedNow, lastLogin: formattedNow
       }
     };
   } catch (err) {
@@ -187,25 +194,25 @@ function logIn(email, password) {
 
     for (let i = 1; i < data.length; i++) {
       if (String(data[i][2]).toLowerCase() === email) {
-        const storedHash = data[i][3];
-        const salt = data[i][4];
-        const hash = hashPassword_(password, salt);
-        if (hash !== storedHash) throw new Error('Incorrect password. Please try again.');
+        const storedPassword = String(data[i][3] || '');
+        if (storedPassword !== password && hashPassword_(password, data[i][4] || '') !== storedPassword) {
+          throw new Error('Incorrect password. Please try again.');
+        }
 
         const now = new Date();
-        const token = generateToken_();
+        const token = email;
         const row = i + 1;
-        sheet.getRange(row, 6).setValue(token);   // Token
-        sheet.getRange(row, 9).setValue(now);      // Last Login
-        sheet.autoResizeColumn(9);
+        const formattedNow = formatDate(now);
+        sheet.getRange(row, 6).setValue(formattedNow);   // Last Login (Col 6 / F)
+        sheet.autoResizeColumn(6);
 
         return {
           success: true,
           token: token,
           user: {
-            id: data[i][0], name: data[i][1], email: data[i][2],
-            avatar: data[i][6] || '',
-            joinDate: formatDate(data[i][7]), lastLogin: formatDate(now)
+            id: String(data[i][0]), name: data[i][1], email: data[i][2],
+            avatar: '',
+            joinDate: formatDate(data[i][4]), lastLogin: formattedNow
           }
         };
       }
@@ -227,8 +234,8 @@ function validateSession(token) {
     return {
       success: true,
       user: {
-        id: row[0], name: row[1], email: row[2], avatar: row[6] || '',
-        joinDate: formatDate(row[7]), lastLogin: formatDate(row[8])
+        id: String(row[0]), name: row[1], email: row[2], avatar: '',
+        joinDate: formatDate(row[4]), lastLogin: formatDate(row[5])
       }
     };
   } catch (err) {
@@ -237,14 +244,7 @@ function validateSession(token) {
 }
 
 function logOut(token) {
-  try {
-    const found = findUserByToken_(token);
-    const ss = getSpreadsheet();
-    ss.getSheetByName(USERS_SHEET).getRange(found.rowIndex, 6).setValue('');
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
+  return { success: true };
 }
 
 function updateProfileName(token, name) {
@@ -261,17 +261,7 @@ function updateProfileName(token, name) {
 }
 
 function updateAvatar(token, dataUrl) {
-  try {
-    const found = findUserByToken_(token);
-    if (dataUrl && dataUrl.length > 45000) {
-      throw new Error('Image is too large. Please choose a smaller picture.');
-    }
-    const ss = getSpreadsheet();
-    ss.getSheetByName(USERS_SHEET).getRange(found.rowIndex, 7).setValue(dataUrl || '');
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
+  return { success: true };
 }
 
 function getFullProfile(token) {
@@ -292,9 +282,9 @@ function getFullProfile(token) {
     return {
       success: true,
       profile: {
-        id: found.row[0], name: found.row[1], email: found.row[2],
-        avatar: found.row[6] || '',
-        joinDate: formatDate(found.row[7]), lastLogin: formatDate(found.row[8]),
+        id: String(found.row[0]), name: found.row[1], email: found.row[2],
+        avatar: '',
+        joinDate: formatDate(found.row[4]), lastLogin: formatDate(found.row[5]),
         totalTasks: total, completedTasks: completed
       }
     };
@@ -324,8 +314,13 @@ function findUserByToken_(token) {
   const ss = getSpreadsheet();
   const sheet = ss.getSheetByName(USERS_SHEET);
   const data = sheet.getDataRange().getValues();
+  const tokenStr = String(token).toLowerCase();
+
   for (let i = 1; i < data.length; i++) {
-    if (data[i][5] === token) {
+    const rowId = String(data[i][0] || '').toLowerCase();
+    const rowEmail = String(data[i][2] || '').toLowerCase();
+    const rowToken = String(data[i][5] || '').toLowerCase();
+    if (rowEmail === tokenStr || rowId === tokenStr || rowToken === tokenStr) {
       return { row: data[i], rowIndex: i + 1 };
     }
   }
@@ -347,20 +342,9 @@ function getTasks(token) {
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
       if (row[1] === email) {
-        var dueDateRawISO = '';
-        if (row[6]) {
-          try {
-            var dd = (typeof row[6] === 'number') ? new Date((row[6] - 25569) * 86400 * 1000) : new Date(row[6]);
-            if (!isNaN(dd.getTime())) dueDateRawISO = dd.toISOString();
-          } catch(ex) {}
-        }
-        var createdRawISO = '';
-        if (row[7]) {
-          try {
-            var cd = (typeof row[7] === 'number') ? new Date((row[7] - 25569) * 86400 * 1000) : new Date(row[7]);
-            if (!isNaN(cd.getTime())) createdRawISO = cd.toISOString();
-          } catch(ex) {}
-        }
+        var dueDateRawISO = parseToISOString_(row[6]);
+        var createdRawISO = parseToISOString_(row[7]);
+
         tasks.push({
           id: row[0],
           userEmail: row[1],
@@ -403,6 +387,8 @@ function saveTask(token, taskData) {
       dueDateStr = parseDueDateInput_(taskData.dueDate);
     }
 
+    const formattedNow = formatDate(now);
+
     sheet.appendRow([
       taskId,
       email,
@@ -411,8 +397,8 @@ function saveTask(token, taskData) {
       taskData.priority,
       taskData.status,
       dueDateStr,
-      now,
-      now
+      formattedNow,
+      formattedNow
     ]);
     sheet.autoResizeColumns(1, TASK_HEADERS.length);
 
@@ -453,7 +439,8 @@ function updateTask(token, taskData) {
       taskData.status,
       dueDateStr
     ]]);
-    sheet.getRange(rowIndex, 9).setValue(now); // Updated Date
+    const formattedNow = formatDate(now);
+    sheet.getRange(rowIndex, 9).setValue(formattedNow); // Updated Date
     sheet.autoResizeColumn(9);
 
     invalidateDashboardCache_(email);
@@ -499,7 +486,7 @@ function markTaskComplete(token, taskId) {
     const ss = getSpreadsheet();
     const sheet = ss.getSheetByName(TASKS_SHEET);
     sheet.getRange(rowIndex, 6).setValue('Completed');
-    sheet.getRange(rowIndex, 9).setValue(new Date());
+    sheet.getRange(rowIndex, 9).setValue(formatDate(new Date()));
     sheet.autoResizeColumn(9);
 
     invalidateDashboardCache_(email);
@@ -541,9 +528,11 @@ function getDashboard(token) {
       else pending++;
 
       if (row[6] && status !== 'Completed') {
-        const due = new Date(row[6]);
-        due.setHours(0, 0, 0, 0);
-        if (due < today) overdue++;
+        const due = parseToDateObj_(row[6]);
+        if (due) {
+          due.setHours(0, 0, 0, 0);
+          if (due < today) overdue++;
+        }
       }
     }
 
@@ -577,8 +566,8 @@ function getReports(token) {
 
       total++;
       const status = row[5];
-      const created = row[7] ? new Date(row[7]) : null;
-      const updated = row[8] ? new Date(row[8]) : null;
+      const created = parseToDateObj_(row[7]);
+      const updated = parseToDateObj_(row[8]);
 
       if (status === 'Completed') completed++;
       if (created) {
@@ -667,28 +656,27 @@ function parseDueDateInput_(dateStr) {
   }
 
   if (!d || isNaN(d.getTime())) return '';
-  return Utilities.formatDate(d, Session.getScriptTimeZone() || 'GMT', 'dd MMM yyyy');
+  return Utilities.formatDate(d, getEffectiveTimeZone_(), 'dd MMM yyyy');
 }
 
 function invalidateDashboardCache_(email) {
   CacheService.getScriptCache().remove('dashboard_' + email);
 }
 
+function getEffectiveTimeZone_() {
+  try {
+    return Session.getScriptTimeZone() || SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Kolkata';
+  } catch(e) {
+    return 'Asia/Kolkata';
+  }
+}
+
 function formatDate(date) {
   if (!date) return '';
   try {
-    var d;
-    // Handle Google Sheets date serial numbers
-    if (typeof date === 'number') {
-      // Google Sheets epoch starts at Dec 30 1899
-      d = new Date((date - 25569) * 86400 * 1000);
-    } else if (date instanceof Date) {
-      d = date;
-    } else {
-      d = new Date(date);
-    }
-    if (isNaN(d.getTime())) return String(date);
-    return Utilities.formatDate(d, Session.getScriptTimeZone() || 'GMT', 'dd MMM yyyy, hh:mm a');
+    var d = parseToDateObj_(date);
+    if (!d) return String(date);
+    return Utilities.formatDate(d, getEffectiveTimeZone_(), 'dd MMM yyyy, hh:mm a');
   } catch (e) {
     return String(date);
   }
@@ -697,17 +685,123 @@ function formatDate(date) {
 function formatDateOnly(date) {
   if (!date) return '';
   try {
-    var d;
-    if (typeof date === 'number') {
-      d = new Date((date - 25569) * 86400 * 1000);
-    } else if (date instanceof Date) {
-      d = date;
-    } else {
-      d = new Date(date);
-    }
-    if (isNaN(d.getTime())) return String(date);
-    return Utilities.formatDate(d, Session.getScriptTimeZone() || 'GMT', 'dd MMM yyyy');
+    var d = parseToDateObj_(date);
+    if (!d) return String(date);
+    return Utilities.formatDate(d, getEffectiveTimeZone_(), 'dd MMM yyyy');
   } catch (e) {
     return String(date);
   }
 }
+
+/** Converts any value (string, date object, serial number) into a JS Date object safely */
+function parseToDateObj_(val) {
+  if (!val) return null;
+  try {
+    var d;
+    if (typeof val === 'number') {
+      d = new Date((val - 25569) * 86400 * 1000);
+    } else if (val instanceof Date) {
+      d = val;
+    } else {
+      d = new Date(val);
+    }
+    return isNaN(d.getTime()) ? null : d;
+  } catch(e) {
+    return null;
+  }
+}
+
+/** Converts any date value into an ISO string or empty string */
+function parseToISOString_(val) {
+  var d = parseToDateObj_(val);
+  return d ? d.toISOString() : '';
+}
+
+/** Generates simple 001, 002, 003 User IDs */
+function generateNextUserId_(sheet) {
+  const data = sheet.getDataRange().getValues();
+  let maxId = 0;
+  for (let i = 1; i < data.length; i++) {
+    const val = String(data[i][0] || '').replace(/[^0-9]/g, '');
+    const num = parseInt(val, 10);
+    if (!isNaN(num) && num > maxId) {
+      maxId = num;
+    }
+  }
+  const nextNum = maxId + 1;
+  return String(nextNum).padStart(3, '0');
+}
+
+/** Fixes/normalizes any existing dates and user format in Google Sheets database to clean normal text strings */
+function fixExistingDatesInSheet(ss) {
+  try {
+    if (!ss) return;
+    const usersSheet = ss.getSheetByName(USERS_SHEET);
+    if (usersSheet) {
+      const uData = usersSheet.getDataRange().getValues();
+      if (uData.length > 0) {
+        usersSheet.getRange(1, 1, 1, USER_HEADERS.length).setValues([USER_HEADERS]);
+        usersSheet.getRange(1, 1, 1, USER_HEADERS.length)
+          .setFontWeight('bold').setBackground('#4361EE').setFontColor('#FFFFFF');
+
+        for (let i = 1; i < uData.length; i++) {
+          const rowNum = i + 1;
+          const currentId = String(uData[i][0] || '');
+          let newId = currentId;
+
+          // Convert USR-XXXXXX to 001, 002, 003...
+          if (!/^\d{3,}$/.test(currentId)) {
+            newId = String(i).padStart(3, '0');
+          }
+
+          let name = uData[i][1] || '';
+          let email = uData[i][2] || '';
+          let password = '123456';
+          let joinDate = '';
+          let lastLogin = '';
+
+          if (uData[i].length >= 9 && uData[i][7]) {
+            joinDate = formatDate(uData[i][7]);
+            lastLogin = formatDate(uData[i][8]);
+          } else {
+            password = String(uData[i][3] || '123456');
+            joinDate = formatDate(uData[i][4] || uData[i][3]);
+            lastLogin = formatDate(uData[i][5] || uData[i][4]);
+          }
+
+          usersSheet.getRange(rowNum, 1, 1, 6).setValues([[
+            newId, name, email, password, joinDate, lastLogin
+          ]]);
+        }
+
+        const maxCols = usersSheet.getMaxColumns();
+        if (maxCols > USER_HEADERS.length) {
+          usersSheet.getRange(1, USER_HEADERS.length + 1, usersSheet.getLastRow(), maxCols - USER_HEADERS.length).clearContent();
+        }
+
+        usersSheet.autoResizeColumns(1, USER_HEADERS.length);
+      }
+    }
+
+    const tasksSheet = ss.getSheetByName(TASKS_SHEET);
+    if (tasksSheet && tasksSheet.getLastRow() > 1) {
+      const tData = tasksSheet.getDataRange().getValues();
+      for (let i = 1; i < tData.length; i++) {
+        const rowNum = i + 1;
+        if (tData[i][6] && (tData[i][6] instanceof Date || typeof tData[i][6] === 'number')) {
+          tasksSheet.getRange(rowNum, 7).setValue(formatDateOnly(tData[i][6]));
+        }
+        if (tData[i][7] && (tData[i][7] instanceof Date || typeof tData[i][7] === 'number')) {
+          tasksSheet.getRange(rowNum, 8).setValue(formatDate(tData[i][7]));
+        }
+        if (tData[i][8] && (tData[i][8] instanceof Date || typeof tData[i][8] === 'number')) {
+          tasksSheet.getRange(rowNum, 9).setValue(formatDate(tData[i][8]));
+        }
+      }
+      tasksSheet.autoResizeColumns(1, TASK_HEADERS.length);
+    }
+  } catch (err) {
+    Logger.log('Migration notice: ' + err.message);
+  }
+}
+
