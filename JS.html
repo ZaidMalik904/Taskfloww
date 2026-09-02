@@ -203,7 +203,7 @@
     toggleAuthForm('login');
     showAuthScreen();
     if (token) {
-      google.script.run.withFailureHandler(() => {}).logOut(token);
+      google.script.run.withFailureHandler(() => { }).logOut(token);
     }
   }
 
@@ -352,8 +352,9 @@
 
     const notifs = [];
     state.tasks.forEach(t => {
-      if (!t.dueDateRaw || t.status === 'Completed') return;
-      const due = new Date(t.dueDateRaw);
+      if ((!t.dueDateRaw && !t.dueDate) || t.status === 'Completed') return;
+      const due = t.dueDateRaw ? new Date(t.dueDateRaw) : parseDateStr_(t.dueDate);
+      if (!due || isNaN(due.getTime())) return;
       due.setHours(0, 0, 0, 0);
 
       if (due < today) {
@@ -467,8 +468,9 @@
   }
 
   function isOverdue(task) {
-    if (!task.dueDateRaw || task.status === 'Completed') return false;
-    const due = new Date(task.dueDateRaw);
+    if ((!task.dueDateRaw && !task.dueDate) || task.status === 'Completed') return false;
+    const due = task.dueDateRaw ? new Date(task.dueDateRaw) : parseDateStr_(task.dueDate);
+    if (!due || isNaN(due.getTime())) return false;
     due.setHours(0, 0, 0, 0);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -569,7 +571,7 @@
       document.getElementById('taskDescription').value = task.description || '';
       document.getElementById('taskPriority').value = task.priority;
       document.getElementById('taskStatus').value = task.status;
-      // Convert ISO date to DD/MM/YYYY for the text input
+      // Convert ISO date or formatted date to DD/MM/YYYY for the text input
       if (task.dueDateRaw) {
         try {
           const d = new Date(task.dueDateRaw);
@@ -579,11 +581,13 @@
             const yyyy = d.getFullYear();
             document.getElementById('taskDueDate').value = dd + '/' + mm + '/' + yyyy;
           } else {
-            document.getElementById('taskDueDate').value = '';
+            document.getElementById('taskDueDate').value = formatToDDMMYYYY_(task.dueDate);
           }
-        } catch(e) {
-          document.getElementById('taskDueDate').value = '';
+        } catch (e) {
+          document.getElementById('taskDueDate').value = formatToDDMMYYYY_(task.dueDate);
         }
+      } else if (task.dueDate) {
+        document.getElementById('taskDueDate').value = formatToDDMMYYYY_(task.dueDate);
       } else {
         document.getElementById('taskDueDate').value = '';
       }
@@ -875,6 +879,30 @@
     if (el.value.length >= 10 && !e.ctrlKey) {
       e.preventDefault();
     }
+  }
+
+  function parseDateStr_(str) {
+    if (!str) return null;
+    str = String(str).trim();
+    const parts = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (parts) {
+      return new Date(parseInt(parts[3]), parseInt(parts[2]) - 1, parseInt(parts[1]));
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function formatToDDMMYYYY_(str) {
+    if (!str) return '';
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(str)) return str;
+    const d = parseDateStr_(str);
+    if (d && !isNaN(d.getTime())) {
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}/${mm}/${yyyy}`;
+    }
+    return str;
   }
 
 </script>
